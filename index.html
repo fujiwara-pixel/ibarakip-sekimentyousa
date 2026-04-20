@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>高画質・黒板カメラ</title>
+
+<!-- iPhone全画面設定 -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  
+<meta property="og:site_name" content="黒板カメラアプリ">
+<meta property="og:title" content="茨木P_石綿事前調査">
+<meta property="og:description" content="黒板を合成して高画質で撮影・保存ができるカメラです。">
+<meta property="og:image" content="https://fujiwara-pixel.github.io/ibarakip-sekimentyousa/icon.png">  
+<link rel="apple-touch-icon" href="icon.png">
+  
+<style>
+/* スライド（スクロール）を許可する設定に変更 */
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: black;
+  color: white;
+  /* overflow: hiddenを解除 */
+}
+
+#container {
+  position: relative;
+  width: 100%;
+  min-height: 100vh; /* 最低でも画面一杯の高さ */
+}
+
+#video {
+  width: 100vw;
+  height: 100vh;
+  object-fit: cover;
+  display: block;
+}
+
+#overlay {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  pointer-events: none;
+  border: 1px dashed rgba(255,255,255,0.5);
+}
+
+.controls {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: rgba(0,0,0,0.4);
+  padding: 10px;
+  border-radius: 8px;
+}
+
+select { width: 200px; font-size: 16px; padding: 5px; }
+.slider-box { text-align: left; width: 200px; font-size: 12px; }
+
+/* ボタンがブラウザのバーに隠れても、スライドすれば押せる位置 */
+.button-group {
+  position: absolute;
+  bottom: 50px; 
+  left: 20px;
+  display: flex;
+  gap: 15px;
+  z-index: 10;
+}
+
+button {
+  font-size: 18px;
+  padding: 15px 25px;
+  border: none;
+  border-radius: 10px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+#shutterBtn { background: #007bff; color: white; }
+#torchBtn { background: #555; color: white; }
+
+/* 撮影後のプレビュー画面 */
+#previewLayer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0,0,0,0.95);
+  z-index: 100;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+#previewImg {
+  max-width: 90%;
+  max-height: 70%;
+  border: 2px solid white;
+  /* 保存後に戻りやすくするためクリック可能にする */
+  cursor: pointer;
+}
+
+.guide-text {
+  background: rgba(255,255,255,0.2);
+  padding: 10px 20px;
+  border-radius: 20px;
+  margin-bottom: 15px;
+  font-size: 14px;
+}
+</style>
+</head>
+
+<body>
+
+<div id="container">
+  <div class="controls">
+    <select id="boardSelect"></select>
+    <div class="slider-box">
+      <span>黒板サイズ調整</span><br>
+      <input type="range" id="sizeSlider" min="0.1" max="0.6" step="0.01" value="0.25">
+    </div>
+  </div>
+
+  <video id="video" autoplay playsinline></video>
+  <img id="overlay">
+
+  <div class="button-group">
+    <button id="shutterBtn" onclick="takePhoto()">撮影</button>
+    <button id="torchBtn" onclick="toggleTorch()">ライト点灯</button>
+  </div>
+</div>
+
+<!-- 撮影後プレビュー -->
+<div id="previewLayer">
+ 
+  
+  <!-- 画像をタップしてもカメラに戻れるようにします -->
+  <img id="previewImg" onclick="closePreview()" title="タップしてカメラに戻る">
+  
+  <p style="font-size:12px; margin-top:10px; color:#aaa;">長押＝保存/画像をタップでカメラに戻る</p>
+  
+  
+</div>
+
+<canvas id="canvas" style="display:none;"></canvas>
+
+<script>
+let boards = [];
+let videoTrack = null;
+let isTorchOn = false;
+
+const video = document.getElementById("video");
+const overlay = document.getElementById("overlay");
+const sizeSlider = document.getElementById("sizeSlider");
+const select = document.getElementById("boardSelect");
+
+// 1. 黒板リスト読み込み
+fetch("boards.json")
+.then(res => res.json())
+.then(data => {
+  boards = data;
+  boards.forEach((b,i)=>{
+    let opt=document.createElement("option");
+    opt.value=i;
+    opt.text=b.name;
+    select.appendChild(opt);
+  });
+  select.onchange = () => { overlay.src = boards[select.value].img; };
+  overlay.src = boards[0].img;
+});
+
+// 2. サイズ調整
+sizeSlider.oninput = () => {
+  overlay.style.width = (sizeSlider.value * 100) + "vw";
+};
+overlay.style.width = (sizeSlider.value * 100) + "vw";
+
+// 3. カメラ起動
+navigator.mediaDevices.getUserMedia({
+  video: { 
+    facingMode: "environment",
+    width: { ideal: 1920 },
+    height: { ideal: 1080 }
+  }
+})
+.then(stream => {
+  video.srcObject = stream;
+  videoTrack = stream.getVideoTracks()[0];
+})
+.catch(err => alert("カメラ起動エラー: " + err));
+
+// 4. ライト
+async function toggleTorch() {
+  if (!videoTrack) return;
+  const caps = videoTrack.getCapabilities();
+  if (!caps.torch) return alert("ライト非対応");
+  isTorchOn = !isTorchOn;
+  await videoTrack.applyConstraints({ advanced: [{ torch: isTorchOn }] });
+  document.getElementById("torchBtn").innerText = isTorchOn ? "ライト消灯" : "ライト点灯";
+}
+
+// 5. 撮影
+function takePhoto() {
+  const canvas = document.getElementById("canvas");
+  const ctx = canvas.getContext("2d");
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(video, 0, 0);
+
+  const w = canvas.width * parseFloat(sizeSlider.value);
+  const h = overlay.naturalHeight * (w / overlay.naturalWidth);
+  const margin = 20 * (canvas.width / window.innerWidth);
+  ctx.drawImage(overlay, canvas.width - w - margin, canvas.height - h - margin, w, h);
+
+  document.getElementById("previewImg").src = canvas.toDataURL("image/png");
+  document.getElementById("previewLayer").style.display = "flex";
+  
+  // 撮影時は一番上にスクロールを戻しておく
+  window.scrollTo(0, 0);
+}
+
+function closePreview() {
+  document.getElementById("previewLayer").style.display = "none";
+}
+</script>
+
+</body>
+</html>
